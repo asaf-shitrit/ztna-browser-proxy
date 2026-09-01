@@ -1,5 +1,7 @@
 # ztna-browser-proxy
 
+[![CI](https://github.com/asaf-shitrit/ztna-browser-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/asaf-shitrit/ztna-browser-proxy/actions/workflows/ci.yml)
+
 A browser-based Zero Trust Network Access (ZTNA) system in TypeScript: private
 applications are never exposed to the internet, their DNS names never resolve
 publicly, and every single connection is authorized against identity before it
