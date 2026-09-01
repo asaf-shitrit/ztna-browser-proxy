@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Packages must be built before typecheck: the apps resolve @ztna/*
+      # types from dist, so a stale build fails in a confusing way.
+      - run: pnpm --filter @ztna/tunnel --filter @ztna/policy build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+  test-redis:
+    name: redis-backed tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6399:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ztna/tunnel --filter @ztna/policy build
+
+      # Certificates are needed by the TLS handshake and mesh mTLS tests, which
+      # otherwise skip themselves.
+      - run: pnpm certs
+
+      - run: pnpm exec vitest run
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6399
+
+  build:
+    name: build all packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Verify the extension bundle is loadable
+        run: |
+          test -f apps/extension/dist/manifest.json
+          test -f apps/extension/dist/background.js
+          test -f apps/extension/dist/popup.html
+          # Vite marks module scripts crossorigin, which silently breaks them
+          # on chrome-extension:// pages. Guard against a regression.
+          ! grep -q crossorigin apps/extension/dist/popup.html

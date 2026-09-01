@@ -306,11 +306,23 @@ the log a transparency feature rather than an admin-only one.
 or sessions. A policy that fails to parse leaves the previous one in force
 rather than failing open or denying everything.
 
+**Forking.** `apps/extension/public/manifest.json` carries a `key`, which pins
+the extension ID so the OIDC redirect URI stays stable (Keycloak cannot
+wildcard a hostname). A fork that publishes to the Chrome Web Store must
+generate its own key and update the redirect URI on the Keycloak client to
+match — see `scripts/browser-test.mjs` for how the ID is derived.
+
 **The extension's `<all_urls>` permission** is required, not gratuitous:
 verified empirically that without it sign-in and the PAC install still succeed
 but every request to a protected host hangs with the 407 unanswered. A
 deployment that knows its own app domains should narrow it in `manifest.json`.
 See `apps/extension/src/permissions.ts`.
+
+## Security
+
+This is a demonstration of the architecture, not an audited product. See
+[SECURITY.md](SECURITY.md) for the known limitations before deploying it
+anywhere that matters.
 
 ## Not included
 
