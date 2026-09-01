@@ -141,3 +141,64 @@ describe.runIf(process.env.SKIP_REDIS !== '1')('RedisAuditSink', () => {
     broken.disconnect();
   });
 });
+
+import { RedisOwnership } from '../src/ownership.js';
+
+/**
+ * Connector failover. A connector that moves to another POP must stay routed
+ * there — the POP it left must not stamp its own address back over the lease
+ * on its next renew tick.
+ */
+describe.runIf(process.env.SKIP_REDIS !== '1')('RedisOwnership', () => {
+  it('publishes and resolves ownership', async (ctx) => {
+    if (!available) ctx.skip();
+    const a = new RedisOwnership(redis!, 'pop-a:8446');
+    await a.claim('dc-pub');
+    expect(await a.lookup('dc-pub')).toBe('pop-a:8446');
+    a.close();
+  });
+
+  it('does not steal a lease that has moved to another POP', async (ctx) => {
+    if (!available) ctx.skip();
+    const a = new RedisOwnership(redis!, 'pop-a:8446');
+    const b = new RedisOwnership(redis!, 'pop-b:8446');
+
+    await a.claim('dc-move');
+    await b.claim('dc-move'); // the connector reconnected to B
+    expect(await a.lookup('dc-move')).toBe('pop-b:8446');
+
+    // A has not noticed its socket close yet and renews. Before the fix this
+    // overwrote B's lease and sent clients to a POP with no live session.
+    await a.renew('dc-move');
+    expect(await a.lookup('dc-move')).toBe('pop-b:8446');
+
+    a.close();
+    b.close();
+  });
+
+  it('reclaims its own lease if it lapsed with nobody else holding it', async (ctx) => {
+    if (!available) ctx.skip();
+    const a = new RedisOwnership(redis!, 'pop-a:8446');
+    await redis!.del('ztna:owner:dc-lapsed');
+
+    await a.renew('dc-lapsed');
+    expect(await a.lookup('dc-lapsed')).toBe('pop-a:8446');
+    a.close();
+  });
+
+  it('releases only its own lease, never the new owner\'s', async (ctx) => {
+    if (!available) ctx.skip();
+    const a = new RedisOwnership(redis!, 'pop-a:8446');
+    const b = new RedisOwnership(redis!, 'pop-b:8446');
+
+    await a.claim('dc-rel');
+    await b.claim('dc-rel');
+
+    // A shuts down after the connector already moved.
+    await a.release('dc-rel');
+    expect(await b.lookup('dc-rel')).toBe('pop-b:8446');
+
+    a.close();
+    b.close();
+  });
+});

@@ -301,6 +301,53 @@ describe('plain HTTP through the proxy (absolute-form, no CONNECT)', () => {
   });
 });
 
+describe('session store outage', () => {
+  it('answers 503, not 407, when the store is unreachable', async () => {
+    const session = await sessions.create(alice, 60_000);
+
+    // Break the store the way a Redis outage would.
+    const original = sessions.resolve.bind(sessions);
+    (sessions as unknown as { resolve: unknown }).resolve = () =>
+      Promise.reject(new Error('ECONNREFUSED'));
+
+    try {
+      const res = await proxyConnect(`127.0.0.1:${wikiPort}`, session);
+
+      // 407 would send every user round the sign-in loop against an IdP that
+      // is perfectly healthy; a dropped socket would look like a network fault.
+      expect(res.status).toBe(503);
+      expect(res.headers?.['retry-after']).toBeDefined();
+
+      const record = (await audit.recent()).find((r) => r.reason === 'store-unavailable');
+      expect(record).toMatchObject({ outcome: 'unavailable', status: 503 });
+    } finally {
+      (sessions as unknown as { resolve: unknown }).resolve = original;
+    }
+  });
+
+  it('does not count an outage against the caller\'s rate limit', async () => {
+    const session = await sessions.create(alice, 60_000);
+    const original = sessions.resolve.bind(sessions);
+    (sessions as unknown as { resolve: unknown }).resolve = () =>
+      Promise.reject(new Error('ECONNREFUSED'));
+
+    try {
+      // Far more than the limit of 3; none of these are the caller's fault.
+      for (let i = 0; i < 6; i += 1) {
+        const res = await proxyConnect(`127.0.0.1:${wikiPort}`, session);
+        expect(res.status).toBe(503);
+      }
+    } finally {
+      (sessions as unknown as { resolve: unknown }).resolve = original;
+    }
+
+    // Once the store recovers the user is served immediately, not throttled.
+    const res = await proxyConnect(`127.0.0.1:${wikiPort}`, session);
+    expect(res.status).toBe(200);
+    res.socket?.destroy();
+  });
+});
+
 describe('brute-force protection', () => {
   it('throttles repeated bad proxy credentials with 429', async () => {
     const bad = { proxyUser: 'guess', proxySecret: 'wrong' };

@@ -58,7 +58,7 @@ export class RedisOwnership implements OwnershipRegistry {
     clearInterval(this.#timers.get(connectorId));
 
     const timer = setInterval(() => {
-      void this.#publish(connectorId).catch((err: unknown) => {
+      void this.renew(connectorId).catch((err: unknown) => {
         this.onError(err instanceof Error ? err : new Error(String(err)));
       });
     }, RENEW_INTERVAL_MS);
@@ -78,6 +78,31 @@ export class RedisOwnership implements OwnershipRegistry {
       1,
       OWNER_PREFIX + connectorId,
       this.selfAddress,
+    );
+  }
+
+  /**
+   * Extend the lease, but ONLY if it is still ours (or has lapsed with nobody
+   * else holding it).
+   *
+   * An unconditional SET here is a real failover bug: when a connector moves to
+   * another POP, this POP may not have noticed its socket close yet, and the
+   * next renew tick would stamp its own address over the new owner's lease.
+   * Clients would then be routed here, to a POP with no live session for that
+   * connector, and get a 502 until the next renew — for up to a full renew
+   * interval after a successful failover.
+   */
+  async renew(connectorId: string): Promise<void> {
+    await this.redis.eval(
+      `local current = redis.call('get', KEYS[1])
+       if current == false or current == ARGV[1] then
+         return redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+       end
+       return 0`,
+      1,
+      OWNER_PREFIX + connectorId,
+      this.selfAddress,
+      String(LEASE_TTL_SECONDS),
     );
   }
 

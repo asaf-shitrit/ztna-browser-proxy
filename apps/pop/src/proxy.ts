@@ -111,6 +111,20 @@ async function handleConnect(
   const auth = await authenticate(req.headers['proxy-authorization'], options);
 
   if (!auth.ok) {
+    if (auth.reason === 'store-unavailable') {
+      // Not the caller's fault: do not count it against their rate limit.
+      options.audit.record({
+        effect: 'deny',
+        outcome: 'unavailable',
+        reason: auth.reason,
+        host: target.host,
+        port: target.port,
+        status: 503,
+      });
+      writeRaw(clientSocket, 503, 'Service Unavailable', { 'Retry-After': '5' });
+      return;
+    }
+
     const decision = options.authLimiter?.hit(key);
     if (decision && !decision.allowed) {
       options.audit.record({
@@ -297,6 +311,19 @@ async function handleAbsoluteForm(
   const auth = await authenticate(req.headers['proxy-authorization'], options);
 
   if (!auth.ok) {
+    if (auth.reason === 'store-unavailable') {
+      options.audit.record({
+        effect: 'deny',
+        outcome: 'unavailable',
+        reason: auth.reason,
+        host: target.host,
+        port: target.port,
+        status: 503,
+      });
+      res.writeHead(503, { 'Retry-After': '5' }).end('session store unavailable');
+      return;
+    }
+
     const decision = options.authLimiter?.hit(key);
     if (decision && !decision.allowed) {
       options.audit.record({
@@ -424,7 +451,10 @@ async function handleAbsoluteForm(
 
 type AuthResult =
   | { ok: true; identity: Identity }
-  | { ok: false; reason: 'missing-credentials' | 'invalid-credentials' };
+  | {
+      ok: false;
+      reason: 'missing-credentials' | 'invalid-credentials' | 'store-unavailable';
+    };
 
 async function authenticate(
   header: string | undefined,
@@ -436,7 +466,19 @@ async function authenticate(
   const sep = decoded.indexOf(':');
   if (sep < 0) return { ok: false, reason: 'invalid-credentials' };
 
-  const session = await options.sessions.resolve(decoded.slice(0, sep), decoded.slice(sep + 1));
+  let session;
+  try {
+    session = await options.sessions.resolve(decoded.slice(0, sep), decoded.slice(sep + 1));
+  } catch (err) {
+    // A session store outage is not a credential problem. Answering 407 would
+    // send every user round the sign-in loop against an IdP that is fine, and
+    // dropping the socket would look like a network fault. Say so plainly.
+    log('error', 'session store unavailable', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { ok: false, reason: 'store-unavailable' };
+  }
+
   // An expired or revoked session returns 407 rather than 403, so Chrome
   // re-prompts for credentials and the extension can supply a fresh secret.
   if (!session) return { ok: false, reason: 'invalid-credentials' };
