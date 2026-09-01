@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "ZTNA Access",
+  "description": "Zero-trust access to private applications, without a VPN.",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvkkrbM9/yw2rq1ZRKKURGDt1iJd/UBNLLPgq0ErLRH5Bzsd6MAuAp1ENLOTa1vNogzPwJm/M8+3+O1fZPsnImquKvUy4NEeOm+4Zrs2q9LeqI4UIaNeTFJDEPBgLVt/YOPCVAWFuXwGDDRtJ0QdqgO4AZJYyBGtJxeBrvLAsCh6lwdN6+NKsP1DFG/HSakFoG0UOVccZjsV4Fze7GoO0S+VXr8QDPQcVJ+chJPYwh9CxoujR9nihtas0fK/ID2AooTMMqufVqvV64RwadkpYiknf1qArGHJQewwxVgpSSZSwsIkw7Slf97e64GwGfk1aX67PoVY2Ko56/TkvCNQigwIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "proxy",
+    "storage",
+    "identity",
+    "alarms",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "ZTNA Access",
+    "default_popup": "popup.html"
+  }
+}

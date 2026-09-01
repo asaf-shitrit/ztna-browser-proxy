@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/tunnel" },
+    { "path": "./packages/policy" },
+    { "path": "./apps/pop" },
+    { "path": "./apps/connector" },
+    { "path": "./apps/demo-app" }
+  ]
+}

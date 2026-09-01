@@ -1,0 +1,12 @@
+# What this connector is willing to dial. The POP cross-checks this against
+# policy at registration, and the connector itself refuses any CONNECT for a
+# target that is not listed here — so a compromised POP still cannot pivot to
+# arbitrary hosts inside the private network.
+apps:
+  - id: wiki
+    hosts: [wiki.internal]
+    ports: [80, 443]
+
+  - id: payroll
+    hosts: [payroll.internal]
+    ports: [80, 443]

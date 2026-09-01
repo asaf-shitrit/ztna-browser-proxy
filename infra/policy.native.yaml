@@ -1,0 +1,37 @@
+# Policy for the native runner.
+#
+# wiki is reachable over both HTTPS (CONNECT) and plain HTTP (absolute-form
+# proxy request). They are separate app entries because they live on different
+# ports and the connector dials a different local address for each.
+apps:
+  - id: wiki
+    hosts: [wiki.internal]
+    ports: [443]
+    connector: dc1
+
+  - id: wiki-http
+    hosts: [wiki.internal]
+    ports: [80]
+    connector: dc1
+
+  - id: payroll
+    hosts: [payroll.internal]
+    ports: [443]
+    connector: dc1
+
+rules:
+  - id: employees-wiki
+    app: wiki
+    allow:
+      groups: [employees]
+
+  - id: employees-wiki-http
+    app: wiki-http
+    allow:
+      groups: [employees]
+
+  # Same network, same connector, different identity requirement.
+  - id: finance-payroll
+    app: payroll
+    allow:
+      groups: [finance]

@@ -1,0 +1,21 @@
+# Catalog for the native (no-Docker) runner.
+#
+# Each entry carries a `dial` override pointing at the local port the demo app
+# actually listens on. The browser still asks for wiki.internal and still
+# validates a certificate issued for that name — only the connector's dial
+# target changes, so no /etc/hosts entry is needed.
+apps:
+  - id: wiki
+    hosts: [wiki.internal]
+    ports: [443]
+    dial: { host: 127.0.0.1, port: 9443 }
+
+  - id: wiki-http
+    hosts: [wiki.internal]
+    ports: [80]
+    dial: { host: 127.0.0.1, port: 9080 }
+
+  - id: payroll
+    hosts: [payroll.internal]
+    ports: [443]
+    dial: { host: 127.0.0.1, port: 9444 }

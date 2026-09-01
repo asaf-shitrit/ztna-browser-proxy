@@ -1,0 +1,30 @@
+# ZTNA access policy.
+#
+# Default deny: a connection is permitted only if it matches an app here AND a
+# rule below grants the requesting identity access to that app.
+
+apps:
+  - id: wiki
+    hosts: [wiki.internal]
+    ports: [80, 443]
+    connector: dc1
+
+  - id: payroll
+    hosts: [payroll.internal]
+    ports: [80, 443]
+    connector: dc1
+
+rules:
+  # Every employee can read the wiki.
+  - id: employees-wiki
+    app: wiki
+    allow:
+      groups: [employees]
+
+  # Payroll is restricted to finance, even though it sits on the same
+  # connector and the same network segment as the wiki. Network position
+  # grants nothing; only identity does.
+  - id: finance-payroll
+    app: payroll
+    allow:
+      groups: [finance]

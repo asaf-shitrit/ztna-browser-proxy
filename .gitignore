@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+infra/certs/*.pem
+infra/certs/*.key
+.env
+.env.local
+.cache/
+infra/certs/*.srl

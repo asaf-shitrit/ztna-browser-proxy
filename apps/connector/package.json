@@ -1,0 +1,19 @@
+{
+  "name": "@ztna/connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@ztna/tunnel": "workspace:*",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@ztna/policy": "workspace:*"
+  }
+}

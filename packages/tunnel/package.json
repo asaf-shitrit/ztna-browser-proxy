@@ -1,0 +1,21 @@
+{
+  "name": "@ztna/tunnel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --tsconfig tsconfig.build.json",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}

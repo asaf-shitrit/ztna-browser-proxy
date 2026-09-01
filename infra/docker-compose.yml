@@ -1,0 +1,212 @@
+# Two networks, deliberately.
+#
+#   edge    — reachable from the host: the POP and the IdP.
+#   private — NOT reachable from the host: the apps and the connector.
+#
+# The demo apps publish no ports at all. `curl https://wiki.internal` from the
+# host must fail, while the browser with the extension must succeed. That
+# contrast is the entire demonstration.
+
+name: ztna
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      # Pin the issuer to the URL the BROWSER uses, so tokens carry a stable
+      # `iss` regardless of which network name reached Keycloak.
+      KC_HOSTNAME: http://localhost:8080
+      # ...while still answering internal requests on http://keycloak:8080.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "8080:8080"
+    networks: [edge]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo ok >&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    # Append-only so sessions and the audit trail survive a Redis restart too,
+    # not just a POP restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pop:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["node", "apps/pop/dist/index.js"]
+    environment:
+      PROXY_PORT: "8443"
+      TUNNEL_PORT: "8444"
+      API_PORT: "8445"
+      POLICY_FILE: /etc/ztna/policy.yaml
+      TLS_CERT_FILE: /etc/ztna/certs/pop.ztna.test.pem
+      TLS_KEY_FILE: /etc/ztna/certs/pop.ztna.test-key.pem
+      CONNECTOR_SECRET: dev-connector-secret-change-me
+      # The issuer is the browser-facing URL (it must match the token's `iss`);
+      # the keys are fetched over the internal network name.
+      OIDC_ISSUER: http://localhost:8080/realms/ztna
+      OIDC_JWKS_URL: http://keycloak:8080/realms/ztna/protocol/openid-connect/certs
+      OIDC_AUDIENCE: ztna-extension
+      # Groups allowed to read /api/audit. Unset = endpoint disabled.
+      AUDIT_GROUPS: ztna-admins
+      # Shared session + audit state, so a POP restart does not sign everyone
+      # out and a second POP would accept the same proxy secrets.
+      REDIS_URL: redis://redis:6379
+      # Multi-POP routing: publish which connectors this instance holds, and
+      # accept forwarded streams from peers.
+      MESH_ADVERTISE: pop.ztna.test:8446
+      MESH_CA_FILE: /etc/ztna/certs/ca.pem
+      # Mutual TLS: each POP presents its own certificate, and only these
+      # identities may forward through us. A CA signature alone is not enough
+      # — the same CA signs the app certificates.
+      MESH_PEER_CNS: pop.ztna.test,pop2.ztna.test
+      PUBLIC_PROXY_HOST: pop.ztna.test
+      PUBLIC_PROXY_PORT: "8443"
+    volumes:
+      - ./policy.yaml:/etc/ztna/policy.yaml:ro
+      - ./certs:/etc/ztna/certs:ro
+    ports:
+      - "8443:8443"   # browser proxy
+      - "8445:8445"   # control API
+    networks:
+      edge:
+        # The connector validates the POP's certificate, which is issued for
+        # this name — so the name must resolve inside the network too.
+        aliases: [pop.ztna.test]
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # A second POP holding NO connector. A client that lands here must still
+  # reach wiki.internal, by discovering that `pop` owns dc1 and forwarding the
+  # stream to it. This is what makes "attach to the closest POP" work.
+  pop2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["node", "apps/pop/dist/index.js"]
+    environment:
+      PROXY_PORT: "8443"
+      TUNNEL_PORT: "8444"
+      API_PORT: "8445"
+      MESH_PORT: "8446"
+      POLICY_FILE: /etc/ztna/policy.yaml
+      TLS_CERT_FILE: /etc/ztna/certs/pop2.ztna.test.pem
+      TLS_KEY_FILE: /etc/ztna/certs/pop2.ztna.test-key.pem
+      CONNECTOR_SECRET: dev-connector-secret-change-me
+      OIDC_ISSUER: http://localhost:8080/realms/ztna
+      OIDC_JWKS_URL: http://keycloak:8080/realms/ztna/protocol/openid-connect/certs
+      OIDC_AUDIENCE: ztna-extension
+      AUDIT_GROUPS: ztna-admins
+      REDIS_URL: redis://redis:6379
+      MESH_ADVERTISE: pop2.ztna.test:8446
+      MESH_CA_FILE: /etc/ztna/certs/ca.pem
+      # Mutual TLS: each POP presents its own certificate, and only these
+      # identities may forward through us. A CA signature alone is not enough
+      # — the same CA signs the app certificates.
+      MESH_PEER_CNS: pop.ztna.test,pop2.ztna.test
+      PUBLIC_PROXY_HOST: pop2.ztna.test
+      PUBLIC_PROXY_PORT: "8453"
+    volumes:
+      - ./policy.yaml:/etc/ztna/policy.yaml:ro
+      - ./certs:/etc/ztna/certs:ro
+    ports:
+      - "8453:8443"   # browser proxy
+      - "8455:8445"   # control API
+    networks:
+      edge:
+        aliases: [pop2.ztna.test]
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  connector:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["node", "apps/connector/dist/index.js"]
+    environment:
+      CONNECTOR_ID: dc1
+      POP_HOST: pop.ztna.test
+      POP_TUNNEL_PORT: "8444"
+      # HMAC of CONNECTOR_ID under the POP's CONNECTOR_SECRET.
+      # Regenerate with: pnpm mint-token dc1 <secret>
+      # Left unset-tolerant on purpose: a required variable here makes even
+      # `docker compose down` fail, which strands published ports. An empty
+      # token simply fails the connector handshake with a clear log line.
+      CONNECTOR_TOKEN: ${CONNECTOR_TOKEN:-}
+      CATALOG_FILE: /etc/ztna/catalog.yaml
+      POP_CA_FILE: /etc/ztna/certs/ca.pem
+    volumes:
+      - ./connector/catalog.yaml:/etc/ztna/catalog.yaml:ro
+      - ./certs:/etc/ztna/certs:ro
+    # The only service on both networks: it dials out to the POP on `edge`
+    # and reaches the apps on `private`. Nothing ever dials in.
+    networks:
+      edge:
+        aliases: [connector]
+      private:
+    depends_on: [pop]
+
+  wiki:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["node", "apps/demo-app/dist/index.js"]
+    environment:
+      APP_NAME: Corporate Wiki
+      APP_ACCENT: "#3b6ea5"
+      TLS_CERT_FILE: /etc/ztna/certs/wiki.internal.pem
+      TLS_KEY_FILE: /etc/ztna/certs/wiki.internal-key.pem
+    volumes:
+      - ./certs:/etc/ztna/certs:ro
+    # No `ports:` — unreachable from the host by construction.
+    networks:
+      private:
+        aliases: [wiki.internal]
+
+  payroll:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["node", "apps/demo-app/dist/index.js"]
+    environment:
+      APP_NAME: Payroll
+      APP_ACCENT: "#8b5a2b"
+      TLS_CERT_FILE: /etc/ztna/certs/payroll.internal.pem
+      TLS_KEY_FILE: /etc/ztna/certs/payroll.internal-key.pem
+    volumes:
+      - ./certs:/etc/ztna/certs:ro
+    networks:
+      private:
+        aliases: [payroll.internal]
+
+volumes:
+  redis-data:
+
+networks:
+  edge:
+  private:
+    internal: true   # no route to the outside world at all
