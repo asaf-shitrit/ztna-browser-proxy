@@ -15,6 +15,13 @@
     "declarationMap": true,
     "sourceMap": true,
     "composite": true,
+    // Explicit rather than relying on TypeScript's ambient auto-inclusion of
+    // every node_modules/@types folder up the tree. Under pnpm those live
+    // behind per-package symlinks, and editors that infer a project rather
+    // than using this config resolve them inconsistently — tsc found them,
+    // the language server did not. apps/extension is a browser target and
+    // sets its own `types`, so it is unaffected.
+    "types": ["node"],
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
