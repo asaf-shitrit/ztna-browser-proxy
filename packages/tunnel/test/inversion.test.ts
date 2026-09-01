@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import net from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { once } from 'node:events';
-import { AddressInfo } from 'node:net';
 import { serveTunnel, parseAuthority } from '../src/serve.js';
 import { dialTunnel, TunnelClient } from '../src/dial.js';
 import { forwardDuplex } from '../src/forward.js';

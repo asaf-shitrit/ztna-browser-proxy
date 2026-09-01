@@ -37,7 +37,9 @@ describe.skipIf(!haveCerts)('tunnel handshake over TLS', () => {
     origin.listen(0, '127.0.0.1');
     await once(origin, 'listening');
     const originPort = (origin.address() as AddressInfo).port;
-    cleanups.push(() => origin.close());
+    cleanups.push(() => {
+      origin.close();
+    });
 
     // --- POP: accepts TLS, reads the preamble, becomes the h2 CLIENT --------
     let popError: Error | undefined;
@@ -70,7 +72,9 @@ describe.skipIf(!haveCerts)('tunnel handshake over TLS', () => {
     popServer.listen(0, '127.0.0.1');
     await once(popServer, 'listening');
     const popPort = (popServer.address() as AddressInfo).port;
-    cleanups.push(() => popServer.close());
+    cleanups.push(() => {
+      popServer.close();
+    });
 
     // --- Connector: dials TLS, becomes the h2 SERVER ------------------------
     const socket = tls.connect({

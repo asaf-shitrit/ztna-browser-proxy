@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // The per-package tsconfigs only include `src`, because they are composite
+  // projects that emit into `dist` under a `src` rootDir. That leaves the test
+  // suites outside every project, so `tsc -b` never sees them. This project
+  // exists purely to typecheck (never emit) the tests.
+  //
+  // Like `tsc -b`, it expects `@ztna/*` to already be built: the tests import
+  // them by package name, which resolves to `dist`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  // `apps/extension` is excluded: it is a browser target that needs the DOM
+  // lib and the `chrome` ambient types, so its tests are checked by its own
+  // tsconfig instead.
+  "include": ["packages/*/test/**/*.ts", "apps/*/test/**/*.ts"],
+  "exclude": ["apps/extension/**"]
+}
