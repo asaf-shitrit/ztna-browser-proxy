@@ -14,5 +14,8 @@
     "jose": "^5.9.6",
     "zod": "^3.24.1",
     "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2"
   }
 }
