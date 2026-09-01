@@ -14,7 +14,7 @@ const EXPECTED = 'HTTPS pop.ztna.test:8443';
 
 function pacFor(apps: SessionApp[]): (url: string, host: string) => string {
   const source = buildPacScript(apps, PROXY);
-  // eslint-disable-next-line no-new-func
+   
   return new Function(`${source}; return FindProxyForURL;`)() as (
     url: string,
     host: string,

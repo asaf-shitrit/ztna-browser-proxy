@@ -27,7 +27,7 @@ interface Stored {
 }
 
 async function load(): Promise<Stored> {
-  return (await chrome.storage.session.get(['tokens', 'session'])) as Stored;
+  return (await chrome.storage.session.get(['tokens', 'session']));
 }
 
 async function save(patch: Stored): Promise<void> {

@@ -3,7 +3,7 @@ import net, { type AddressInfo } from 'node:net';
 import http from 'node:http';
 import { once } from 'node:events';
 import { Policy, type Identity } from '@ztna/policy';
-import { serveTunnel, encodePreamble, writePreamble } from '@ztna/tunnel';
+import { serveTunnel, writePreamble } from '@ztna/tunnel';
 import { ConnectorRegistry, startTunnelListener, mintToken } from '../src/registry.js';
 import { startProxy } from '../src/proxy.js';
 import { startMeshListener, MeshClient } from '../src/mesh.js';

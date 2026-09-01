@@ -153,7 +153,7 @@ describe('tunnel role inversion', () => {
         const socket = net.connect(target.port, target.host);
         await once(socket, 'connect');
         stream.respond({ ':status': 200 });
-        await forwardDuplex(stream as never, socket);
+        await forwardDuplex(stream, socket);
       },
     });
 
@@ -219,7 +219,7 @@ describe('tunnel role inversion', () => {
         const socket = net.connect(target.port, target.host);
         await once(socket, 'connect');
         stream.respond({ ':status': 200 });
-        await forwardDuplex(stream as never, socket);
+        await forwardDuplex(stream, socket);
       },
     });
 
@@ -335,7 +335,7 @@ describe('flow control and shutdown', () => {
         const socket = net.connect(target.port, target.host);
         await once(socket, 'connect');
         stream.respond({ ':status': 200 });
-        await forwardDuplex(stream as never, socket);
+        await forwardDuplex(stream, socket);
       },
     });
 
@@ -365,7 +365,7 @@ describe('flow control and shutdown', () => {
         const socket = net.connect(target.port, target.host);
         await once(socket, 'connect');
         stream.respond({ ':status': 200 });
-        await forwardDuplex(stream as never, socket);
+        await forwardDuplex(stream, socket);
       },
     });
 

@@ -51,8 +51,8 @@ export class TunnelClient {
       this.session.setLocalWindowSize(16 * MB);
     });
 
-    this.session.on('error', (err) => {
-      options.onError?.(err);
+    this.session.on('error', (err: unknown) => {
+      options.onError?.(toError(err));
     });
 
     this.session.on('close', () => {
@@ -149,9 +149,9 @@ export class TunnelClient {
         clearTimeout(timer);
         resolve({ status, body: Buffer.concat(chunks).toString('utf8') });
       });
-      stream.on('error', (err) => {
+      stream.on('error', (err: unknown) => {
         clearTimeout(timer);
-        reject(err);
+        reject(toError(err));
       });
     });
   }
@@ -186,7 +186,7 @@ export class TunnelClient {
         });
       } catch (err) {
         clearTimeout(timer);
-        onError?.(err instanceof Error ? err : new Error(String(err)));
+        onError?.(toError(err));
       }
     }, PING_INTERVAL_MS);
 
@@ -207,4 +207,9 @@ export function dialTunnel(socket: Duplex, options: TunnelClientOptions = {}): T
 
 function formatAuthority(host: string, port: number): string {
   return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+/** Node types many socket/stream `error` payloads as `any`. Narrow at the edge. */
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }

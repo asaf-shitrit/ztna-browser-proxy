@@ -79,7 +79,7 @@ export function startMeshListener(options: MeshListenerOptions): net.Server {
     log('info', 'mesh listener ready', { port: options.port, tls: Boolean(options.cert) });
   });
 
-  return server as unknown as net.Server;
+  return server;
 }
 
 async function handleMeshStream(
@@ -95,8 +95,8 @@ async function handleMeshStream(
     return;
   }
 
-  const connectorId = String(headers[CONNECTOR_HEADER] ?? '');
-  const target = parseAuthority(String(headers[http2.constants.HTTP2_HEADER_AUTHORITY] ?? ''));
+  const connectorId = headerValue(headers, CONNECTOR_HEADER);
+  const target = parseAuthority(headerValue(headers, http2.constants.HTTP2_HEADER_AUTHORITY));
   if (!connectorId || !target) {
     stream.respond({ ':status': 400 });
     stream.end();
@@ -123,7 +123,7 @@ async function handleMeshStream(
 
   stream.respond({ ':status': 200 });
   log('info', 'serving forwarded stream for peer', { peer: peer.identity, connectorId });
-  await forwardDuplex(stream as unknown as Duplex, upstream as unknown as Duplex);
+  await forwardDuplex(stream, upstream);
 }
 
 type PeerAuth = { ok: true; identity: string } | { ok: false; reason: string };
@@ -140,24 +140,42 @@ function authenticatePeer(
   headers: Record<string, unknown>,
   options: MeshListenerOptions,
 ): PeerAuth {
-  const socket = stream.session?.socket as TLSSocketLike | undefined;
-  const usingMtls = Boolean(options.ca && options.peerCns);
-
-  if (usingMtls) {
-    const cert = socket?.getPeerCertificate?.();
-    const cn = cert?.subject?.CN;
-    if (!cn) return { ok: false, reason: 'no client certificate' };
-    if (!options.peerCns!.includes(cn)) {
-      return { ok: false, reason: `certificate CN '${cn}' is not a known peer` };
-    }
-    return { ok: true, identity: cn };
+  if (options.ca && options.peerCns) {
+    return authenticateByCertificate(stream, options.peerCns);
   }
+  return authenticateBySecret(headers, options.secret);
+}
 
-  if (!options.secret) return { ok: false, reason: 'mesh auth not configured' };
-  if (!constantTimeEquals(String(headers[AUTH_HEADER] ?? ''), options.secret)) {
+function authenticateByCertificate(stream: ServerHttp2Stream, peerCns: string[]): PeerAuth {
+  const socket = stream.session?.socket as TLSSocketLike | undefined;
+  const cn = socket?.getPeerCertificate?.()?.subject?.CN;
+  if (!cn) return { ok: false, reason: 'no client certificate' };
+  if (!peerCns.includes(cn)) {
+    return { ok: false, reason: `certificate CN '${cn}' is not a known peer` };
+  }
+  return { ok: true, identity: cn };
+}
+
+function authenticateBySecret(
+  headers: Record<string, unknown>,
+  secret: string | undefined,
+): PeerAuth {
+  if (!secret) return { ok: false, reason: 'mesh auth not configured' };
+  if (!constantTimeEquals(headerValue(headers, AUTH_HEADER), secret)) {
     return { ok: false, reason: 'bad shared secret' };
   }
   return { ok: true, identity: 'shared-secret' };
+}
+
+/**
+ * HTTP/2 delivers a repeated header as an array. Collapsing one with `String()`
+ * would silently produce a comma-joined value, so anything that is not a single
+ * string is treated as absent — a duplicated auth or routing header is
+ * ambiguous, and guessing which copy was meant is how request smuggling starts.
+ */
+function headerValue(headers: Record<string, unknown>, name: string): string {
+  const raw = headers[name];
+  return typeof raw === 'string' ? raw : '';
 }
 
 interface TLSSocketLike {
@@ -254,8 +272,9 @@ export class MeshClient {
         : {}),
     });
 
-    session.on('error', (err) => {
-      log('warn', 'mesh peer session error', { peer: peerAddress, error: err.message });
+    session.on('error', (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log('warn', 'mesh peer session error', { peer: peerAddress, error: message });
       this.#sessions.delete(peerAddress);
     });
     session.on('close', () => this.#sessions.delete(peerAddress));

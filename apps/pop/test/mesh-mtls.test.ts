@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import net, { type AddressInfo } from 'node:net';
+import { type AddressInfo } from 'node:net';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { ConnectorRegistry } from '../src/registry.js';

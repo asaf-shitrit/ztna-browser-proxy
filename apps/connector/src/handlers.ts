@@ -74,7 +74,7 @@ export async function handleConnect(
 
   stream.respond({ ':status': 200 });
 
-  const { bytesUp, bytesDown } = await forwardDuplex(stream as never, upstream);
+  const { bytesUp, bytesDown } = await forwardDuplex(stream, upstream);
   log('info', 'stream closed', { ...target, bytesUp, bytesDown });
 }
 

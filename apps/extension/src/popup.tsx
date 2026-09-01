@@ -4,7 +4,7 @@ import type { ExtensionState, Message } from './types.js';
 import './popup.css';
 
 function send(message: Message): Promise<ExtensionState> {
-  return chrome.runtime.sendMessage(message) as Promise<ExtensionState>;
+  return chrome.runtime.sendMessage(message);
 }
 
 function App(): JSX.Element {
