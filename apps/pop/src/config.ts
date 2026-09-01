@@ -67,8 +67,16 @@ export type PopConfig = z.infer<typeof configSchema> & {
   meshCa?: Buffer;
 };
 
-export function loadConfig(): PopConfig {
-  const parsed = configSchema.parse({
+/** Split a comma-separated environment variable into trimmed, non-empty parts. */
+function list(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function readEnv(): unknown {
+  return {
     proxyPort: num(process.env.PROXY_PORT, 8443),
     tunnelPort: num(process.env.TUNNEL_PORT, 8444),
     apiPort: num(process.env.API_PORT, 8445),
@@ -84,63 +92,68 @@ export function loadConfig(): PopConfig {
     meshAdvertise: process.env.MESH_ADVERTISE,
     meshSecret: process.env.MESH_SECRET,
     meshCaFile: process.env.MESH_CA_FILE,
-    meshPeerCns: (process.env.MESH_PEER_CNS ?? '')
-      .split(',')
-      .map((c) => c.trim())
-      .filter(Boolean),
+    meshPeerCns: list(process.env.MESH_PEER_CNS),
     authRateLimit: num(process.env.AUTH_RATE_LIMIT, 20),
     authRateWindowMs: num(process.env.AUTH_RATE_WINDOW_MS, 60_000),
-    auditGroups: (process.env.AUDIT_GROUPS ?? '')
-      .split(',')
-      .map((g) => g.trim())
-      .filter(Boolean),
+    auditGroups: list(process.env.AUDIT_GROUPS),
     publicProxyHost: process.env.PUBLIC_PROXY_HOST ?? 'pop.ztna.test',
     publicProxyPort: num(process.env.PUBLIC_PROXY_PORT, 8443),
     devPlaintextProxy: process.env.DEV_PLAINTEXT_PROXY === '1',
-  });
+  };
+}
 
-  const config: PopConfig = { ...parsed };
+/** Load the certificate material referenced by the parsed config. */
+function loadKeyMaterial(config: PopConfig): void {
+  if (config.certFile && config.keyFile) {
+    config.cert = fs.readFileSync(config.certFile);
+    config.key = fs.readFileSync(config.keyFile);
+  } else if (!config.devPlaintextProxy) {
+    throw new Error('TLS_CERT_FILE and TLS_KEY_FILE are required unless DEV_PLAINTEXT_PROXY=1');
+  }
 
-  if (parsed.certFile && parsed.keyFile) {
-    config.cert = fs.readFileSync(parsed.certFile);
-    config.key = fs.readFileSync(parsed.keyFile);
-  } else if (!parsed.devPlaintextProxy) {
+  if (config.meshCaFile) {
+    config.meshCa = fs.readFileSync(config.meshCaFile);
+  }
+}
+
+/**
+ * Multi-POP routing needs three things together: somewhere to publish
+ * ownership, an address peers can reach, and a way to authenticate the hop.
+ * Half-configured is rejected rather than silently degraded — a POP that
+ * cannot forward looks identical to one whose connector is simply offline.
+ */
+function validateMesh(config: PopConfig): void {
+  const requested = Boolean(
+    config.meshAdvertise || config.meshSecret || config.meshPeerCns.length > 0,
+  );
+  if (!requested) return;
+
+  if (!config.redisUrl || !config.meshAdvertise) {
+    throw new Error('multi-POP routing needs REDIS_URL and MESH_ADVERTISE');
+  }
+
+  const hasMutualTls = Boolean(config.cert && config.meshCa && config.meshPeerCns.length);
+  if (hasMutualTls) return;
+
+  if (!config.meshSecret) {
     throw new Error(
-      'TLS_CERT_FILE and TLS_KEY_FILE are required unless DEV_PLAINTEXT_PROXY=1',
+      'multi-POP routing needs MESH_PEER_CNS (with TLS_CERT_FILE and MESH_CA_FILE) ' +
+        'for mutual TLS, or MESH_SECRET as a fallback',
     );
   }
 
-  if (parsed.meshCaFile) {
-    config.meshCa = fs.readFileSync(parsed.meshCaFile);
-  }
-
-  // Multi-POP routing needs somewhere to publish ownership, an address peers
-  // can reach, and a way to authenticate the hop.
-  const meshRequested = Boolean(
-    parsed.meshAdvertise || parsed.meshSecret || parsed.meshPeerCns.length > 0,
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      msg: 'mesh is using a shared secret; set MESH_PEER_CNS for mutual TLS',
+    }),
   );
-  if (meshRequested) {
-    if (!parsed.redisUrl || !parsed.meshAdvertise) {
-      throw new Error('multi-POP routing needs REDIS_URL and MESH_ADVERTISE');
-    }
+}
 
-    const hasMutualTls = Boolean(config.cert && config.meshCa && parsed.meshPeerCns.length);
-    if (!hasMutualTls && !parsed.meshSecret) {
-      throw new Error(
-        'multi-POP routing needs MESH_PEER_CNS (with TLS_CERT_FILE and MESH_CA_FILE) ' +
-          'for mutual TLS, or MESH_SECRET as a fallback',
-      );
-    }
-    if (!hasMutualTls) {
-      console.warn(
-        JSON.stringify({
-          level: 'warn',
-          msg: 'mesh is using a shared secret; set MESH_PEER_CNS for mutual TLS',
-        }),
-      );
-    }
-  }
-
+export function loadConfig(): PopConfig {
+  const config: PopConfig = { ...configSchema.parse(readEnv()) };
+  loadKeyMaterial(config);
+  validateMesh(config);
   return config;
 }
 

@@ -9,6 +9,8 @@
   "scripts": {
     "build": "pnpm -r --filter=./packages/* build && pnpm -r --filter=./apps/* build",
     "typecheck": "tsc -b && tsc -p tsconfig.tests.json && pnpm --filter @ztna/extension typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf packages/*/dist apps/*/dist tsconfig.tsbuildinfo packages/*/tsconfig.tsbuildinfo apps/*/tsconfig.tsbuildinfo",

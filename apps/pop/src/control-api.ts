@@ -100,19 +100,107 @@ export function startControlApi(options: ControlApiOptions): http.Server | https
   return server;
 }
 
-async function route(
+type Jwks = ReturnType<typeof createRemoteJWKSet>;
+
+/** Liveness is public; the inventory behind it is not. */
+async function handleHealth(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: ControlApiOptions,
-  jwks: ReturnType<typeof createRemoteJWKSet>,
+  jwks: Jwks,
 ): Promise<void> {
-  // Only the extension may call this API from a browser. A wildcard origin
-  // would let any page the user visits read these responses cross-origin.
+  // An unauthenticated caller gets liveness only: the connector and session
+  // inventory maps out the private estate for anyone who asks.
+  const identity = await verifyBearer(req, options, jwks);
+  if (!identity) {
+    json(res, 200, { status: 'ok' });
+    return;
+  }
+
+  json(res, 200, {
+    status: 'ok',
+    connectors: options.registry.list().map((c) => ({
+      id: c.connectorId,
+      apps: c.catalog.apps.map((a) => a.id),
+      connectedAt: c.connectedAt,
+    })),
+    sessions: await options.sessions.size(),
+  });
+}
+
+async function handleAudit(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: ControlApiOptions,
+  jwks: Jwks,
+): Promise<void> {
+  const identity = await verifyBearer(req, options, jwks);
+  if (!identity) {
+    json(res, 401, { error: 'invalid or missing bearer token' });
+    return;
+  }
+
+  const scope = auditScope(identity, options.config.auditGroups);
+  if (scope === 'none') {
+    log('warn', 'audit access denied', { sub: identity.sub, groups: identity.groups });
+    json(res, 403, { error: 'not authorized to read the audit log' });
+    return;
+  }
+
+  json(res, 200, {
+    scope,
+    records: visibleAuditRecords(identity, scope, await options.audit.recent()),
+  });
+}
+
+async function handleCreateSession(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: ControlApiOptions,
+  jwks: Jwks,
+): Promise<void> {
+  // Token verification is unauthenticated and CPU-bound, so it is throttled.
+  const decision = options.limiter?.hit(req.socket.remoteAddress ?? 'unknown');
+  if (decision && !decision.allowed) {
+    json(res, 429, { error: 'too many requests' });
+    return;
+  }
+  await createSession(req, res, options, jwks);
+}
+
+type RouteHandler = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: ControlApiOptions,
+  jwks: Jwks,
+) => Promise<void>;
+
+const ROUTES: Record<string, RouteHandler> = {
+  'GET /api/health': handleHealth,
+  'POST /api/health': handleHealth,
+  'GET /api/audit': handleAudit,
+  'POST /api/session': handleCreateSession,
+  'DELETE /api/session': deleteSession,
+};
+
+/** Only the extension may call this API from a browser. */
+function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
+  // A wildcard origin would let any page the user visits read these responses
+  // cross-origin — including, before this was fixed, the whole audit log.
   const allowed = allowedOrigin(req.headers.origin);
   if (allowed) res.setHeader('Access-Control-Allow-Origin', allowed);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+}
+
+async function route(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: ControlApiOptions,
+  jwks: Jwks,
+): Promise<void> {
+  applyCors(req, res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204).end();
@@ -120,62 +208,14 @@ async function route(
   }
 
   const path = new URL(req.url ?? '/', 'http://pop').pathname;
+  const handler = ROUTES[`${req.method ?? 'GET'} ${path}`];
 
-  if (path === '/api/health') {
-    // Liveness is public; the connector and session inventory is not — it maps
-    // out the private estate for anyone who asks.
-    const identity = await verifyBearer(req, options, jwks);
-    if (!identity) {
-      json(res, 200, { status: 'ok' });
-      return;
-    }
-    json(res, 200, {
-      status: 'ok',
-      connectors: options.registry.list().map((c) => ({
-        id: c.connectorId,
-        apps: c.catalog.apps.map((a) => a.id),
-        connectedAt: c.connectedAt,
-      })),
-      sessions: await options.sessions.size(),
-    });
+  if (!handler) {
+    json(res, 404, { error: 'not found' });
     return;
   }
 
-  if (path === '/api/audit' && req.method === 'GET') {
-    const identity = await verifyBearer(req, options, jwks);
-    if (!identity) {
-      json(res, 401, { error: 'invalid or missing bearer token' });
-      return;
-    }
-    const scope = auditScope(identity, options.config.auditGroups);
-    if (scope === 'none') {
-      log('warn', 'audit access denied', { sub: identity.sub, groups: identity.groups });
-      json(res, 403, { error: 'not authorized to read the audit log' });
-      return;
-    }
-
-    const records = visibleAuditRecords(identity, scope, await options.audit.recent());
-    json(res, 200, { scope, records });
-    return;
-  }
-
-  if (path === '/api/session' && req.method === 'POST') {
-    const key = req.socket.remoteAddress ?? 'unknown';
-    const decision = options.limiter?.hit(key);
-    if (decision && !decision.allowed) {
-      json(res, 429, { error: 'too many requests' });
-      return;
-    }
-    await createSession(req, res, options, jwks);
-    return;
-  }
-
-  if (path === '/api/session' && req.method === 'DELETE') {
-    await deleteSession(req, res, options, jwks);
-    return;
-  }
-
-  json(res, 404, { error: 'not found' });
+  await handler(req, res, options, jwks);
 }
 
 async function createSession(

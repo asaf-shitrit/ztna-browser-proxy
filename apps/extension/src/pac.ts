@@ -46,20 +46,45 @@ export function buildPacScript(
 }`;
 }
 
-export async function applyPac(
-  apps: SessionApp[],
-  proxy: { host: string; port: number },
-): Promise<void> {
-  await chrome.proxy.settings.set({
-    scope: 'regular',
-    value: {
-      mode: 'pac_script',
-      pacScript: { data: buildPacScript(apps, proxy), mandatory: false },
-    },
+/**
+ * `chrome.proxy.settings` is callback-style and reports failure through
+ * `chrome.runtime.lastError` rather than by rejecting, so awaiting the bare
+ * call does nothing *and* discards the error.
+ *
+ * That matters: proxy settings are a ChromeSetting another extension can hold
+ * with higher precedence, and the browser can refuse ours. Swallowing that
+ * leaves the popup reporting "Connected" while no traffic is being proxied at
+ * all — the single most confusing failure this extension could produce.
+ */
+function applySetting(run: (done: () => void) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    run(() => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(`proxy settings rejected: ${error.message}`));
+      else resolve();
+    });
   });
 }
 
+export function applyPac(
+  apps: SessionApp[],
+  proxy: { host: string; port: number },
+): Promise<void> {
+  return applySetting((done) =>
+    chrome.proxy.settings.set(
+      {
+        scope: 'regular',
+        value: {
+          mode: 'pac_script',
+          pacScript: { data: buildPacScript(apps, proxy), mandatory: false },
+        },
+      },
+      done,
+    ),
+  );
+}
+
 /** Restore normal browsing. Called on sign-out and on any fatal error. */
-export async function clearPac(): Promise<void> {
-  await chrome.proxy.settings.clear({ scope: 'regular' });
+export function clearPac(): Promise<void> {
+  return applySetting((done) => chrome.proxy.settings.clear({ scope: 'regular' }, done));
 }

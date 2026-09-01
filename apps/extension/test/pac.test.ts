@@ -14,7 +14,11 @@ const EXPECTED = 'HTTPS pop.ztna.test:8443';
 
 function pacFor(apps: SessionApp[]): (url: string, host: string) => string {
   const source = buildPacScript(apps, PROXY);
-   
+  // Executing the generated script IS the test. A PAC file is JavaScript the
+  // browser will run, so string-matching it would assert the wrong thing —
+  // these cases (lookalike suffixes, multi-label wildcards) are exactly where
+  // a regex that merely *looks* right routes traffic wrongly.
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call
   return new Function(`${source}; return FindProxyForURL;`)() as (
     url: string,
     host: string,

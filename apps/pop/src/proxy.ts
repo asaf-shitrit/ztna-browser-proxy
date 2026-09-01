@@ -111,47 +111,8 @@ async function handleConnect(
   const auth = await authenticate(req.headers['proxy-authorization'], options);
 
   if (!auth.ok) {
-    if (auth.reason === 'store-unavailable') {
-      // Not the caller's fault: do not count it against their rate limit.
-      options.audit.record({
-        effect: 'deny',
-        outcome: 'unavailable',
-        reason: auth.reason,
-        host: target.host,
-        port: target.port,
-        status: 503,
-      });
-      writeRaw(clientSocket, 503, 'Service Unavailable', { 'Retry-After': '5' });
-      return;
-    }
-
-    const decision = options.authLimiter?.hit(key);
-    if (decision && !decision.allowed) {
-      options.audit.record({
-        effect: 'deny',
-        outcome: 'blocked',
-        reason: 'rate-limited',
-        host: target.host,
-        port: target.port,
-        status: 429,
-      });
-      writeRaw(clientSocket, 429, 'Too Many Requests', {
-        'Retry-After': String(Math.ceil(decision.retryAfterMs / 1000)),
-      });
-      return;
-    }
-
-    options.audit.record({
-      effect: 'deny',
-      outcome: 'blocked',
-      reason: auth.reason,
-      host: target.host,
-      port: target.port,
-      status: 407,
-    });
-    writeRaw(clientSocket, 407, 'Proxy Authentication Required', {
-      'Proxy-Authenticate': 'Basic realm="ztna"',
-    });
+    const rejection = rejectAuth(auth.reason, key, target, options);
+    writeRaw(clientSocket, rejection.status, rejection.message, rejection.headers);
     return;
   }
 
@@ -211,59 +172,118 @@ export function forwardToApp(
   return forwardDuplex(client, upstream);
 }
 
-async function openUpstream(
-  decision: Decision,
+interface AuthRejection {
+  status: number;
+  headers: Record<string, string>;
+  message: string;
+}
+
+/**
+ * Decide how to answer a failed proxy authentication, and audit it.
+ *
+ * Shared by both proxy paths so CONNECT and absolute-form cannot drift: they
+ * must throttle the same attempts, distinguish an outage from a bad credential
+ * the same way, and produce the same audit trail. Only the rendering differs.
+ */
+function rejectAuth(
+  reason: 'missing-credentials' | 'invalid-credentials' | 'store-unavailable',
+  key: string,
   target: { host: string; port: number },
   options: ProxyOptions,
-): Promise<
+): AuthRejection {
+  const audit = (outcome: 'blocked' | 'unavailable', status: number, why: string): void => {
+    options.audit.record({
+      effect: 'deny',
+      outcome,
+      reason: why,
+      host: target.host,
+      port: target.port,
+      status,
+    });
+  };
+
+  // A store outage is not the caller's fault: it must not be answered with 407
+  // (which would loop every user through sign-in against a healthy IdP), and
+  // must not count against their rate limit.
+  if (reason === 'store-unavailable') {
+    audit('unavailable', 503, reason);
+    return {
+      status: 503,
+      headers: { 'Retry-After': '5' },
+      message: 'session store unavailable',
+    };
+  }
+
+  const decision = options.authLimiter?.hit(key);
+  if (decision && !decision.allowed) {
+    audit('blocked', 429, 'rate-limited');
+    return {
+      status: 429,
+      headers: { 'Retry-After': String(Math.ceil(decision.retryAfterMs / 1000)) },
+      message: 'too many failed authentication attempts',
+    };
+  }
+
+  audit('blocked', 407, reason);
+  return {
+    status: 407,
+    headers: { 'Proxy-Authenticate': 'Basic realm="ztna"' },
+    message: 'proxy authentication required',
+  };
+}
+
+type UpstreamResult =
   | { ok: true; stream: Duplex }
-  | { ok: false; status: number; message: string }
-> {
-  const connectorId = decision.connectorId;
-  if (!connectorId) {
+  | { ok: false; status: number; message: string };
+
+/** Map a connector/peer status onto what the browser should be told. */
+function upstreamFailure(status: number): UpstreamResult {
+  return status === 504
+    ? { ok: false, status: 504, message: 'Gateway Timeout' }
+    : { ok: false, status: 502, message: 'Bad Gateway' };
+}
+
+function offline(decision: Decision, connectorId: string, owner?: string | null): UpstreamResult {
+  // Fail fast and loudly: a missing connector is an outage, not a policy
+  // decision, and hanging here would look like a broken app to the user.
+  log('warn', 'no live connector for app', { appId: decision.appId, connectorId, owner });
+  return { ok: false, status: 502, message: 'Bad Gateway (connector offline)' };
+}
+
+/** This POP holds the connector: open the stream directly. */
+async function openLocally(
+  connector: NonNullable<ReturnType<ConnectorRegistry['get']>>,
+  connectorId: string,
+  target: { host: string; port: number },
+): Promise<UpstreamResult> {
+  try {
+    const { stream, status } = await connector.client.openStream(target.host, target.port);
+    if (status !== 200) return upstreamFailure(status);
+    return { ok: true, stream: stream as unknown as Duplex };
+  } catch (err) {
+    log('warn', 'failed to open tunnel stream', {
+      connectorId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { ok: false, status: 502, message: 'Bad Gateway' };
   }
+}
 
-  // Fast path: this POP holds the connector. Deliberately checked BEFORE any
-  // ownership lookup — with clients and connectors both attaching to the
-  // nearest POP this is the common case, and it must not pay a Redis round
-  // trip on every CONNECT.
-  const local = options.registry.get(connectorId);
-  if (local) {
-    try {
-      const { stream, status } = await local.client.openStream(target.host, target.port);
-      if (status !== 200) {
-        return {
-          ok: false,
-          status: status === 504 ? 504 : 502,
-          message: status === 504 ? 'Gateway Timeout' : 'Bad Gateway',
-        };
-      }
-      return { ok: true, stream: stream as unknown as Duplex };
-    } catch (err) {
-      log('warn', 'failed to open tunnel stream', {
-        connectorId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return { ok: false, status: 502, message: 'Bad Gateway' };
-    }
-  }
-
-  // Slow path: some other POP may hold it.
-  if (!options.ownership || !options.mesh) {
-    log('warn', 'no live connector for app', { appId: decision.appId, connectorId });
-    return { ok: false, status: 502, message: 'Bad Gateway (connector offline)' };
-  }
+/** Another POP holds the connector: forward the stream to it. */
+async function openViaPeer(
+  decision: Decision,
+  connectorId: string,
+  target: { host: string; port: number },
+  options: ProxyOptions,
+): Promise<UpstreamResult> {
+  if (!options.ownership || !options.mesh) return offline(decision, connectorId);
 
   const owner = await options.ownership.lookup(connectorId);
 
   // A lease naming us, with no local session behind it, is stale — the
   // connector dropped and the key has not expired yet. Forwarding to ourselves
   // would loop.
-  if (!owner || owner === options.meshAddress) {
-    log('warn', 'no live connector for app', { appId: decision.appId, connectorId, owner });
-    return { ok: false, status: 502, message: 'Bad Gateway (connector offline)' };
-  }
+  if (!owner || owner === options.meshAddress) return offline(decision, connectorId, owner);
 
   try {
     const { stream, status } = await options.mesh.openStream(
@@ -272,13 +292,8 @@ async function openUpstream(
       target.host,
       target.port,
     );
-    if (status !== 200) {
-      return {
-        ok: false,
-        status: status === 504 ? 504 : 502,
-        message: status === 504 ? 'Gateway Timeout' : 'Bad Gateway',
-      };
-    }
+    if (status !== 200) return upstreamFailure(status);
+
     log('info', 'forwarded via peer pop', { connectorId, owner });
     return { ok: true, stream };
   } catch (err) {
@@ -289,6 +304,23 @@ async function openUpstream(
     });
     return { ok: false, status: 502, message: 'Bad Gateway' };
   }
+}
+
+async function openUpstream(
+  decision: Decision,
+  target: { host: string; port: number },
+  options: ProxyOptions,
+): Promise<UpstreamResult> {
+  const connectorId = decision.connectorId;
+  if (!connectorId) return { ok: false, status: 502, message: 'Bad Gateway' };
+
+  // Fast path first, deliberately: with clients and connectors both attaching
+  // to the nearest POP, the connector is usually right here, and that case
+  // must not pay a Redis round trip on every CONNECT.
+  const local = options.registry.get(connectorId);
+  if (local) return openLocally(local, connectorId, target);
+
+  return openViaPeer(decision, connectorId, target, options);
 }
 
 async function handleAbsoluteForm(
@@ -311,46 +343,8 @@ async function handleAbsoluteForm(
   const auth = await authenticate(req.headers['proxy-authorization'], options);
 
   if (!auth.ok) {
-    if (auth.reason === 'store-unavailable') {
-      options.audit.record({
-        effect: 'deny',
-        outcome: 'unavailable',
-        reason: auth.reason,
-        host: target.host,
-        port: target.port,
-        status: 503,
-      });
-      res.writeHead(503, { 'Retry-After': '5' }).end('session store unavailable');
-      return;
-    }
-
-    const decision = options.authLimiter?.hit(key);
-    if (decision && !decision.allowed) {
-      options.audit.record({
-        effect: 'deny',
-        outcome: 'blocked',
-        reason: 'rate-limited',
-        host: target.host,
-        port: target.port,
-        status: 429,
-      });
-      res
-        .writeHead(429, { 'Retry-After': String(Math.ceil(decision.retryAfterMs / 1000)) })
-        .end('too many failed authentication attempts');
-      return;
-    }
-
-    options.audit.record({
-      effect: 'deny',
-      outcome: 'blocked',
-      reason: auth.reason,
-      host: target.host,
-      port: target.port,
-      status: 407,
-    });
-    res
-      .writeHead(407, { 'Proxy-Authenticate': 'Basic realm="ztna"' })
-      .end('proxy authentication required');
+    const rejection = rejectAuth(auth.reason, key, target, options);
+    res.writeHead(rejection.status, rejection.headers).end(rejection.message);
     return;
   }
 
