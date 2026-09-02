@@ -25,5 +25,10 @@
       "entry": ["src/background.ts", "src/popup.tsx", "test/**/*.test.ts"],
       "project": ["src/**/*.{ts,tsx}"]
     }
-  }
+  },
+
+  // lint-staged is invoked from .husky/pre-commit. knip reads the import graph
+  // and package manifests, not shell scripts, so it cannot see that use — the
+  // dependency is real, the blind spot is knip's.
+  "ignoreDependencies": ["lint-staged"]
 }

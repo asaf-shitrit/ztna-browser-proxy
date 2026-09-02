@@ -2,28 +2,42 @@
 # seconds, which is cheap enough to pay per commit — and a hook slow enough to
 # be worth skipping is a hook that gets skipped with --no-verify.
 #
+# Quiet on success, and the full output only when something fails: a hook that
+# prints hundreds of lines every time trains you to ignore it, which defeats
+# the point of running it at all.
+#
 # Bypass deliberately with `git commit --no-verify` when you genuinely need to.
 
-set -e
+# Run a check, showing its output only if it fails.
+run() {
+  label=$1
+  shift
+  if output=$("$@" 2>&1); then
+    printf '  \033[32m✓\033[0m %s\n' "$label"
+  else
+    printf '  \033[31m✗\033[0m %s\n\n%s\n' "$label" "$output"
+    exit 1
+  fi
+}
 
-# 1. Never commit key material. infra/certs is gitignored, but a rename or a
-#    `git add -f` slips past that, and this repository's CA signs the POP
-#    identities — publishing that key would be unrecoverable.
+# Never commit key material. infra/certs is gitignored, but a rename or a
+# `git add -f` slips past that, and this repository's CA signs the POP
+# identities — publishing that key would be unrecoverable.
 staged_keys=$(git diff --cached --name-only --diff-filter=ACMR |
   grep -E '\.(pem|key|p12|pfx)$|(^|/)id_rsa|\.env$' || true)
 if [ -n "$staged_keys" ]; then
-  echo "refusing to commit key material or secrets:"
-  echo "$staged_keys" | sed 's/^/  /'
-  echo "if this is genuinely intended, commit with --no-verify"
+  printf '  \033[31m✗\033[0m refusing to commit key material:\n'
+  echo "$staged_keys" | sed 's/^/      /'
+  echo '      commit with --no-verify if this is genuinely intended'
   exit 1
 fi
 
-# 2. Auto-fix what can be fixed, on staged files only.
-pnpm exec lint-staged
+# Auto-fix what can be fixed, on staged files only.
+run 'lint-staged' pnpm exec lint-staged --quiet
 
-# 3. The CI recipe. Cross-file rules and type errors do not respect which
-#    files happen to be staged, so these run over the whole workspace.
-pnpm typecheck
-pnpm lint
-pnpm knip
-pnpm test
+# Cross-file rules and type errors do not respect which files happen to be
+# staged, so these run over the whole workspace.
+run 'typecheck  ' pnpm typecheck
+run 'lint       ' pnpm lint
+run 'knip       ' pnpm knip
+run 'test       ' pnpm test
