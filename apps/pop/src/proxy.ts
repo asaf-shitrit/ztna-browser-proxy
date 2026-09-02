@@ -95,25 +95,28 @@ export function startProxy(options: ProxyOptions): http.Server | https.Server {
   return server;
 }
 
-async function handleConnect(
+/**
+ * Everything that must happen before a byte moves, for either proxy mode:
+ * authenticate, throttle, authorize, and open the upstream — auditing each
+ * outcome.
+ *
+ * Shared so CONNECT and absolute-form cannot diverge on any of it. They differ
+ * only in how a refusal is rendered on the wire, which is the caller's job.
+ */
+type Gate =
+  | { ok: true; stream: Duplex; identity: Identity; decision: Decision }
+  | { ok: false; status: number; message: string; headers: Record<string, string> };
+
+async function authorizeAndOpen(
   req: http.IncomingMessage,
-  clientSocket: Duplex,
-  head: Buffer,
+  key: string,
+  target: { host: string; port: number },
   options: ProxyOptions,
-): Promise<void> {
-  const target = parseHostPort(req.url ?? '', 443);
-  if (!target) {
-    writeRaw(clientSocket, 400, 'Bad Request');
-    return;
-  }
-
-  const key = sourceKey(clientSocket as unknown as { remoteAddress?: string });
+): Promise<Gate> {
   const auth = await authenticate(req.headers['proxy-authorization'], options);
-
   if (!auth.ok) {
     const rejection = rejectAuth(auth.reason, key, target, options);
-    writeRaw(clientSocket, rejection.status, rejection.message, rejection.headers);
-    return;
+    return { ok: false, ...rejection };
   }
 
   // A success clears the counter, so a user who mistypes once then succeeds is
@@ -127,12 +130,8 @@ async function handleConnect(
   });
 
   if (decision.effect === 'deny') {
-    options.audit.decision(auth.identity, target, decision, {
-      status: 403,
-      outcome: 'blocked',
-    });
-    writeRaw(clientSocket, 403, 'Forbidden');
-    return;
+    options.audit.decision(auth.identity, target, decision, { status: 403, outcome: 'blocked' });
+    return { ok: false, status: 403, message: 'Forbidden', headers: {} };
   }
 
   const upstream = await openUpstream(decision, target, options);
@@ -141,16 +140,40 @@ async function handleConnect(
       status: upstream.status,
       outcome: 'unavailable',
     });
-    writeRaw(clientSocket, upstream.status, upstream.message);
+    return { ok: false, status: upstream.status, message: upstream.message, headers: {} };
+  }
+
+  return { ok: true, stream: upstream.stream, identity: auth.identity, decision };
+}
+
+async function handleConnect(
+  req: http.IncomingMessage,
+  clientSocket: Duplex,
+  head: Buffer,
+  options: ProxyOptions,
+): Promise<void> {
+  const target = parseHostPort(req.url ?? '', 443);
+  if (!target) {
+    writeRaw(clientSocket, 400, 'Bad Request');
     return;
   }
 
+  const key = sourceKey(clientSocket as unknown as { remoteAddress?: string });
+  const gate = await authorizeAndOpen(req, key, target, options);
+
+  if (!gate.ok) {
+    writeRaw(clientSocket, gate.status, gate.message, gate.headers);
+    return;
+  }
+
+  const { stream: upstreamStream, identity, decision } = gate;
+
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-  if (head.length > 0) upstream.stream.write(head);
+  if (head.length > 0) upstreamStream.write(head);
 
-  const { bytesUp, bytesDown, durationMs } = await forwardToApp(clientSocket, upstream.stream);
+  const { bytesUp, bytesDown, durationMs } = await forwardToApp(clientSocket, upstreamStream);
 
-  options.audit.decision(auth.identity, target, decision, {
+  options.audit.decision(identity, target, decision, {
     status: 200,
     outcome: 'established',
     bytesUp,
@@ -286,12 +309,12 @@ async function openViaPeer(
   if (!owner || owner === options.meshAddress) return offline(decision, connectorId, owner);
 
   try {
-    const { stream, status } = await options.mesh.openStream(
-      owner,
+    const { stream, status } = await options.mesh.openStream({
+      peerAddress: owner,
       connectorId,
-      target.host,
-      target.port,
-    );
+      host: target.host,
+      port: target.port,
+    });
     if (status !== 200) return upstreamFailure(status);
 
     log('info', 'forwarded via peer pop', { connectorId, owner });
@@ -323,6 +346,86 @@ async function openUpstream(
   return openViaPeer(decision, connectorId, target, options);
 }
 
+/** Re-emit the client's request in origin form, down the tunnel. */
+function writeOriginRequest(
+  req: http.IncomingMessage,
+  url: URL,
+  upstream: Duplex,
+): number {
+  const headers = { ...req.headers };
+  // Hop-by-hop headers: the proxy credential is ours, not the app's, and
+  // keep-alive is negotiated per hop.
+  delete headers['proxy-authorization'];
+  delete headers['proxy-connection'];
+  headers['connection'] = 'close';
+
+  const head = [
+    `${req.method} ${url.pathname}${url.search} HTTP/1.1`,
+    ...Object.entries(headers).map(
+      ([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`,
+    ),
+    '',
+    '',
+  ].join('\r\n');
+
+  upstream.write(head);
+  return Buffer.byteLength(head);
+}
+
+/**
+ * Pump the exchange and audit it once it settles.
+ *
+ * forwardDuplex is deliberately not reused: Node's HTTP server still owns this
+ * socket for keep-alive, and hijacking it would break connection reuse for the
+ * next request on the same proxy connection.
+ */
+function relayOriginResponse(
+  ctx: {
+    req: http.IncomingMessage;
+    socket: Duplex;
+    upstream: Duplex;
+    bytesUpInitial: number;
+  },
+  audit: (outcome: 'established' | 'unavailable', status: number, bytes: Bytes) => void,
+): void {
+  const startedAt = Date.now();
+  let bytesUp = ctx.bytesUpInitial;
+  let bytesDown = 0;
+  let recorded = false;
+
+  const settle = (outcome: 'established' | 'unavailable', status: number): void => {
+    if (recorded) return;
+    recorded = true;
+    audit(outcome, status, { bytesUp, bytesDown, durationMs: Date.now() - startedAt });
+  };
+
+  ctx.req.on('data', (chunk: Buffer) => {
+    bytesUp += chunk.length;
+  });
+  ctx.upstream.on('data', (chunk: Buffer) => {
+    bytesDown += chunk.length;
+  });
+
+  ctx.req.pipe(ctx.upstream, { end: false });
+  ctx.upstream.pipe(ctx.socket);
+
+  ctx.upstream.on('end', () => {
+    ctx.socket.end();
+    settle('established', 200);
+  });
+  ctx.upstream.on('close', () => settle('established', 200));
+  ctx.upstream.on('error', () => {
+    settle('unavailable', 502);
+    ctx.socket.destroy();
+  });
+}
+
+interface Bytes {
+  bytesUp: number;
+  bytesDown: number;
+  durationMs: number;
+}
+
 async function handleAbsoluteForm(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -338,109 +441,32 @@ async function handleAbsoluteForm(
   }
 
   const target = { host: url.hostname, port: Number(url.port || 80) };
-
   const key = sourceKey(req.socket);
-  const auth = await authenticate(req.headers['proxy-authorization'], options);
+  const gate = await authorizeAndOpen(req, key, target, options);
 
-  if (!auth.ok) {
-    const rejection = rejectAuth(auth.reason, key, target, options);
-    res.writeHead(rejection.status, rejection.headers).end(rejection.message);
+  if (!gate.ok) {
+    res.writeHead(gate.status, gate.headers).end(gate.message);
     return;
   }
-
-  options.authLimiter?.clear(key);
-
-  const decision = options.policy().evaluate({
-    identity: auth.identity,
-    host: target.host,
-    port: target.port,
-  });
-
-  if (decision.effect === 'deny') {
-    options.audit.decision(auth.identity, target, decision, {
-      status: 403,
-      outcome: 'blocked',
-    });
-    res.writeHead(403).end('forbidden');
-    return;
-  }
-
-  const upstream = await openUpstream(decision, target, options);
-  if (!upstream.ok) {
-    options.audit.decision(auth.identity, target, decision, {
-      status: upstream.status,
-      outcome: 'unavailable',
-    });
-    res.writeHead(upstream.status).end(upstream.message);
-    return;
-  }
-
-  // Re-emit the request in origin form down the tunnel.
-  const headers = { ...req.headers };
-  delete headers['proxy-authorization'];
-  delete headers['proxy-connection'];
-  headers['connection'] = 'close';
-
-  const lines = [
-    `${req.method} ${url.pathname}${url.search} HTTP/1.1`,
-    ...Object.entries(headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`),
-    '',
-    '',
-  ];
-  const head = lines.join('\r\n');
-  upstream.stream.write(head);
 
   const socket = res.socket;
   if (!socket) {
-    upstream.stream.destroy();
+    gate.stream.destroy();
     return;
   }
 
-  // Account for this request the same way the CONNECT path does, so the audit
-  // trail is uniform across both. We cannot reuse forwardDuplex here: Node's
-  // HTTP server still owns this socket for keep-alive, and hijacking it would
-  // break connection reuse for the next request on the same proxy connection.
-  const startedAt = Date.now();
-  let bytesUp = Buffer.byteLength(head);
-  let bytesDown = 0;
+  const bytesUpInitial = writeOriginRequest(req, url, gate.stream);
 
-  req.on('data', (chunk: Buffer) => {
-    bytesUp += chunk.length;
-  });
-  upstream.stream.on('data', (chunk: Buffer) => {
-    bytesDown += chunk.length;
-  });
-
-  let recorded = false;
-  const record = (outcome: 'established' | 'unavailable', status: number): void => {
-    if (recorded) return;
-    recorded = true;
-    // `status` is the POP's proxy-level result, not the application's. The POP
-    // does not parse the upstream response, and deliberately so — it has no
-    // business reading app traffic. A 404 from the app is still a successful
-    // brokered access as far as this audit trail is concerned.
-    options.audit.decision(auth.identity, target, decision, {
-      status,
-      outcome,
-      bytesUp,
-      bytesDown,
-      durationMs: Date.now() - startedAt,
-    });
-  };
-
-  req.pipe(upstream.stream, { end: false });
-
-  // Relay the raw upstream response bytes straight to the client socket.
-  upstream.stream.pipe(socket);
-  upstream.stream.on('end', () => {
-    socket.end();
-    record('established', 200);
-  });
-  upstream.stream.on('close', () => record('established', 200));
-  upstream.stream.on('error', () => {
-    record('unavailable', 502);
-    socket.destroy();
-  });
+  relayOriginResponse(
+    { req, socket, upstream: gate.stream, bytesUpInitial },
+    (outcome, status, bytes) => {
+      // `status` is the POP's proxy-level result, not the application's. The
+      // POP does not parse the upstream response, and deliberately so — it has
+      // no business reading app traffic. A 404 from the app is still a
+      // successful brokered access as far as this audit trail is concerned.
+      options.audit.decision(gate.identity, target, gate.decision, { status, outcome, ...bytes });
+    },
+  );
 }
 
 type AuthResult =

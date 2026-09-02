@@ -234,7 +234,7 @@ describe('multi-POP routing', () => {
     const impostor = new MeshClient({ secret: 'wrong-secret', tls: false });
     const owner = FakeOwnership.map.get('dc1')!;
 
-    const { status } = await impostor.openStream(owner, 'dc1', '127.0.0.1', originPort);
+    const { status } = await impostor.openStream({ peerAddress: owner, connectorId: 'dc1', host: '127.0.0.1', port: originPort });
     expect(status).toBe(401);
     impostor.close();
   });
@@ -245,7 +245,7 @@ describe('multi-POP routing', () => {
     const client = new MeshClient({ secret: MESH_SECRET, tls: false });
     const owner = FakeOwnership.map.get('dc1')!;
 
-    const { status } = await client.openStream(owner, 'unknown-connector', '127.0.0.1', originPort);
+    const { status } = await client.openStream({ peerAddress: owner, connectorId: 'unknown-connector', host: '127.0.0.1', port: originPort });
     expect(status).toBe(502);
     client.close();
   });

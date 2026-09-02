@@ -54,7 +54,7 @@ describe.skipIf(!haveCerts)('mesh mTLS', () => {
     cleanups.push(() => client.close());
 
     // 502 (not 401): identity was accepted, we simply hold no such connector.
-    const { status } = await client.openStream(`localhost:${port}`, 'dc1', '127.0.0.1', 9999);
+    const { status } = await client.openStream({ peerAddress: `localhost:${port}`, connectorId: 'dc1', host: '127.0.0.1', port: 9999 });
     expect(status).toBe(502);
   });
 
@@ -69,7 +69,7 @@ describe.skipIf(!haveCerts)('mesh mTLS', () => {
     });
     cleanups.push(() => impostor.close());
 
-    const { status } = await impostor.openStream(`localhost:${port}`, 'dc1', '127.0.0.1', 9999);
+    const { status } = await impostor.openStream({ peerAddress: `localhost:${port}`, connectorId: 'dc1', host: '127.0.0.1', port: 9999 });
     expect(status).toBe(401);
   });
 
@@ -80,7 +80,7 @@ describe.skipIf(!haveCerts)('mesh mTLS', () => {
 
     // TLS itself rejects the handshake, so this never reaches a stream.
     await expect(
-      anonymous.openStream(`localhost:${port}`, 'dc1', '127.0.0.1', 9999),
+      anonymous.openStream({ peerAddress: `localhost:${port}`, connectorId: 'dc1', host: '127.0.0.1', port: 9999 }),
     ).rejects.toThrow();
   });
 
@@ -95,7 +95,7 @@ describe.skipIf(!haveCerts)('mesh mTLS', () => {
     });
     cleanups.push(() => secretOnly.close());
 
-    const { status } = await secretOnly.openStream(`localhost:${port}`, 'dc1', '127.0.0.1', 9999);
+    const { status } = await secretOnly.openStream({ peerAddress: `localhost:${port}`, connectorId: 'dc1', host: '127.0.0.1', port: 9999 });
     expect(status).toBe(401);
   });
 
@@ -109,7 +109,7 @@ describe.skipIf(!haveCerts)('mesh mTLS', () => {
     cleanups.push(() => selfSigned.close());
 
     await expect(
-      selfSigned.openStream(`localhost:${port}`, 'dc1', '127.0.0.1', 9999),
+      selfSigned.openStream({ peerAddress: `localhost:${port}`, connectorId: 'dc1', host: '127.0.0.1', port: 9999 }),
     ).rejects.toThrow();
   });
 });

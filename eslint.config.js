@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
+import sonarjs from 'eslint-plugin-sonarjs';
 import tseslint from 'typescript-eslint';
 
 /**
@@ -9,6 +10,16 @@ import tseslint from 'typescript-eslint';
  * linter can see types, so every source file must belong to a tsconfig.
  */
 const COMPLEXITY_MAX = 12;
+
+/**
+ * Cyclomatic complexity counts branches, and branches alone are a poor proxy
+ * for "hard to read". The worst function in this codebase scored 13 on
+ * `complexity` while being 93 lines and 46 statements of almost entirely
+ * straight-line code. Size and nesting limits catch what branch counting
+ * structurally cannot, and cognitive complexity weights nesting so a deep but
+ * unbranching function still registers.
+ */
+const COGNITIVE_MAX = 12;
 
 export default tseslint.config(
   {
@@ -41,8 +52,17 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    plugins: { sonarjs },
     rules: {
       complexity: ['error', { max: COMPLEXITY_MAX }],
+      'sonarjs/cognitive-complexity': ['error', COGNITIVE_MAX],
+      'max-depth': ['error', 3],
+      'max-nested-callbacks': ['error', 3],
+      'max-statements': ['error', 25],
+      'max-lines-per-function': ['error', { max: 80, skipBlankLines: true, skipComments: true }],
+      // Five positional arguments, three of them strings, is a transposition
+      // waiting to happen — pass an object instead.
+      'max-params': ['error', 4],
 
       // An unhandled rejection in a connection handler takes down the process,
       // so a promise that nobody waits on is a defect, not a style choice.
@@ -87,6 +107,15 @@ export default tseslint.config(
   {
     files: ['**/test/**/*.ts'],
     rules: {
+      // Size and nesting limits are about readability of production logic.
+      // A test nests describe > it > new Promise > callback by construction,
+      // and a table-driven suite is long on purpose — neither is the kind of
+      // complexity these rules exist to catch.
+      'max-nested-callbacks': 'off',
+      'max-statements': 'off',
+      'max-lines-per-function': 'off',
+      'sonarjs/cognitive-complexity': 'off',
+
       // Tests reach into internals and hand fixtures around loosely; the
       // type-safety rules that guard production code only create noise here.
       '@typescript-eslint/no-unsafe-assignment': 'off',

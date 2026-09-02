@@ -82,6 +82,45 @@ export function startMeshListener(options: MeshListenerOptions): net.Server {
   return server;
 }
 
+/** Refuse a forwarded stream with a status, saying why in the log. */
+function refuse(stream: ServerHttp2Stream, status: number, msg: string, extra: object = {}): void {
+  log('warn', msg, extra);
+  stream.respond({ ':status': status });
+  stream.end();
+}
+
+/**
+ * Resolve a forwarded request to a connector THIS POP holds.
+ *
+ * Local registry only. A peer must never forward onward: two POPs each
+ * believing the other owns a connector would bounce the stream between them
+ * until something timed out.
+ */
+function resolveForward(
+  stream: ServerHttp2Stream,
+  headers: Record<string, unknown>,
+  registry: ConnectorRegistry,
+):
+  | { ok: true; connectorId: string; target: { host: string; port: number };
+      connector: NonNullable<ReturnType<ConnectorRegistry['get']>> }
+  | { ok: false } {
+  const connectorId = headerValue(headers, CONNECTOR_HEADER);
+  const target = parseAuthority(headerValue(headers, http2.constants.HTTP2_HEADER_AUTHORITY));
+
+  if (!connectorId || !target) {
+    refuse(stream, 400, 'mesh request missing connector or authority');
+    return { ok: false };
+  }
+
+  const connector = registry.get(connectorId);
+  if (!connector) {
+    refuse(stream, 502, 'mesh request for a connector we do not hold', { connectorId });
+    return { ok: false };
+  }
+
+  return { ok: true, connectorId, target, connector };
+}
+
 async function handleMeshStream(
   stream: ServerHttp2Stream,
   headers: Record<string, unknown>,
@@ -89,40 +128,27 @@ async function handleMeshStream(
 ): Promise<void> {
   const peer = authenticatePeer(stream, headers, options);
   if (!peer.ok) {
-    log('warn', 'mesh auth rejected', { reason: peer.reason });
-    stream.respond({ ':status': 401 });
-    stream.end();
+    refuse(stream, 401, 'mesh auth rejected', { reason: peer.reason });
     return;
   }
 
-  const connectorId = headerValue(headers, CONNECTOR_HEADER);
-  const target = parseAuthority(headerValue(headers, http2.constants.HTTP2_HEADER_AUTHORITY));
-  if (!connectorId || !target) {
-    stream.respond({ ':status': 400 });
-    stream.end();
-    return;
-  }
+  const forward = resolveForward(stream, headers, options.registry);
+  if (!forward.ok) return;
 
-  // Local registry ONLY. A peer must never forward onward: two POPs each
-  // believing the other owns a connector would bounce the stream between them
-  // until something timed out.
-  const connector = options.registry.get(connectorId);
-  if (!connector) {
-    log('warn', 'mesh request for a connector we do not hold', { connectorId });
-    stream.respond({ ':status': 502 });
-    stream.end();
-    return;
-  }
-
-  const { stream: upstream, status } = await connector.client.openStream(target.host, target.port);
+  const { stream: upstream, status } = await forward.connector.client.openStream(
+    forward.target.host,
+    forward.target.port,
+  );
   if (status !== 200) {
-    stream.respond({ ':status': status });
-    stream.end();
+    refuse(stream, status, 'connector refused forwarded target', { status });
     return;
   }
 
   stream.respond({ ':status': 200 });
-  log('info', 'serving forwarded stream for peer', { peer: peer.identity, connectorId });
+  log('info', 'serving forwarded stream for peer', {
+    peer: peer.identity,
+    connectorId: forward.connectorId,
+  });
   await forwardDuplex(stream, upstream);
 }
 
@@ -203,12 +229,15 @@ export class MeshClient {
   constructor(private readonly options: MeshClientOptions) {}
 
   async openStream(
-    peerAddress: string,
-    connectorId: string,
-    host: string,
-    port: number,
-    timeoutMs = 15_000,
+    request: {
+      peerAddress: string;
+      connectorId: string;
+      host: string;
+      port: number;
+      timeoutMs?: number;
+    },
   ): Promise<{ stream: Duplex; status: number }> {
+    const { peerAddress, connectorId, host, port, timeoutMs = 15_000 } = request;
     const session = this.#session(peerAddress);
 
     return new Promise((resolve, reject) => {
