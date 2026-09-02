@@ -24,7 +24,8 @@
     "test:browser": "node scripts/browser-test.mjs",
     "fetch-chrome": "bash scripts/fetch-chrome-for-testing.sh",
     "down": "docker compose -f infra/docker-compose.yml down",
-    "test:redis": "docker run --rm -d --name ztna-test-redis -p 6399:6379 redis:7-alpine >/dev/null && vitest run apps/pop/test/redis-store.test.ts; docker rm -f ztna-test-redis >/dev/null"
+    "test:redis": "docker run --rm -d --name ztna-test-redis -p 6399:6379 redis:7-alpine >/dev/null && vitest run apps/pop/test/redis-store.test.ts; docker rm -f ztna-test-redis >/dev/null",
+    "prepare": "husky || true"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -32,11 +33,16 @@
     "eslint": "^10.9.1",
     "eslint-plugin-sonarjs": "^4.2.0",
     "globals": "^17.12.0",
+    "husky": "^9.1.7",
     "knip": "^6.34.0",
+    "lint-staged": "^17.4.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.69.0",
     "vitest": "^2.1.8"
   },
-  "packageManager": "pnpm@10.28.1"
+  "packageManager": "pnpm@10.28.1",
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs}": "eslint --fix"
+  }
 }

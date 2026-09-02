@@ -1,0 +1,29 @@
+# Runs the same checks as CI, in the same order. They total roughly eight
+# seconds, which is cheap enough to pay per commit — and a hook slow enough to
+# be worth skipping is a hook that gets skipped with --no-verify.
+#
+# Bypass deliberately with `git commit --no-verify` when you genuinely need to.
+
+set -e
+
+# 1. Never commit key material. infra/certs is gitignored, but a rename or a
+#    `git add -f` slips past that, and this repository's CA signs the POP
+#    identities — publishing that key would be unrecoverable.
+staged_keys=$(git diff --cached --name-only --diff-filter=ACMR |
+  grep -E '\.(pem|key|p12|pfx)$|(^|/)id_rsa|\.env$' || true)
+if [ -n "$staged_keys" ]; then
+  echo "refusing to commit key material or secrets:"
+  echo "$staged_keys" | sed 's/^/  /'
+  echo "if this is genuinely intended, commit with --no-verify"
+  exit 1
+fi
+
+# 2. Auto-fix what can be fixed, on staged files only.
+pnpm exec lint-staged
+
+# 3. The CI recipe. Cross-file rules and type errors do not respect which
+#    files happen to be staged, so these run over the whole workspace.
+pnpm typecheck
+pnpm lint
+pnpm knip
+pnpm test
