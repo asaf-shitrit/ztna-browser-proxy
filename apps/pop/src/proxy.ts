@@ -188,7 +188,7 @@ async function handleConnect(
  * pumps it against the tunnel stream. Keeping this free of HTTP/1.1 specifics
  * is what makes that future change additive rather than a rewrite.
  */
-export function forwardToApp(
+function forwardToApp(
   client: Duplex,
   upstream: Duplex,
 ): Promise<{ bytesUp: number; bytesDown: number; durationMs: number }> {
@@ -506,7 +506,7 @@ async function authenticate(
   return { ok: true, identity: session.identity };
 }
 
-export function parseHostPort(
+function parseHostPort(
   value: string,
   defaultPort: number,
 ): { host: string; port: number } | null {

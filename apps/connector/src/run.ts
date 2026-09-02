@@ -13,7 +13,7 @@ import { createHandlers, log } from './handlers.js';
  */
 
 export const MAX_BACKOFF_MS = 30_000;
-export const BASE_BACKOFF_MS = 1000;
+const BASE_BACKOFF_MS = 1000;
 
 export interface RunDeps {
   /** Establish an authenticated-at-the-transport-level connection to the POP. */
@@ -52,7 +52,7 @@ export async function tlsConnect(config: ConnectorConfig): Promise<Duplex> {
 }
 
 /** One tunnel session: connect, serve, and resolve when the socket closes. */
-export async function runSession(config: ConnectorConfig, deps: RunDeps): Promise<void> {
+async function runSession(config: ConnectorConfig, deps: RunDeps): Promise<void> {
   const socket = await deps.connect(config);
 
   // Must flush before HTTP/2 takes the socket — see writePreamble().

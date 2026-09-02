@@ -296,7 +296,7 @@ async function verifyBearer(
 }
 
 /** Map IdP claims onto the identity the policy engine understands. */
-export function toIdentity(payload: JWTPayload): Identity | null {
+function toIdentity(payload: JWTPayload): Identity | null {
   if (!payload.sub) return null;
 
   const raw = payload['groups'];

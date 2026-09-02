@@ -23,7 +23,7 @@
  * should replace `<all_urls>` in manifest.json with just those — e.g.
  * `["https://*.corp.example.com/*"]`. Everything else here is unchanged.
  */
-export const REQUIRED_ORIGINS = ['<all_urls>'];
+const REQUIRED_ORIGINS = ['<all_urls>'];
 
 export async function hasHostAccess(): Promise<boolean> {
   return chrome.permissions.contains({ origins: REQUIRED_ORIGINS });

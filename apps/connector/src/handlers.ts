@@ -29,7 +29,7 @@ export function createHandlers(config: ConnectorConfig): ServeTunnelOptions {
   };
 }
 
-export async function handleConnect(
+async function handleConnect(
   stream: ServerHttp2Stream,
   target: { host: string; port: number },
   config: ConnectorConfig,

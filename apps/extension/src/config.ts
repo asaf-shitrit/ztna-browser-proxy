@@ -10,8 +10,13 @@ export interface ExtensionConfig {
 
 /**
  * Defaults target the native runner (`pnpm dev`), which serves the POP as
- * `localhost` so no hosts-file entry is needed. For the Docker stack, point
- * `popApiBase` at https://pop.ztna.test:8445 via setConfig().
+ * `localhost` so no hosts-file entry is needed.
+ *
+ * For the Docker stack the POP is reached as https://pop.ztna.test:8445.
+ * Override without rebuilding by setting the stored config from the
+ * extension's service-worker console:
+ *
+ *   chrome.storage.local.set({ config: { popApiBase: 'https://pop.ztna.test:8445' } })
  */
 const DEFAULTS: ExtensionConfig = {
   popApiBase: 'https://localhost:8445',
@@ -24,7 +29,3 @@ export async function getConfig(): Promise<ExtensionConfig> {
   return { ...DEFAULTS, ...(stored['config'] as Partial<ExtensionConfig> | undefined) };
 }
 
-export async function setConfig(patch: Partial<ExtensionConfig>): Promise<void> {
-  const current = await getConfig();
-  await chrome.storage.local.set({ config: { ...current, ...patch } });
-}

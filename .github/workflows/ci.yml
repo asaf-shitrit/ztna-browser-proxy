@@ -29,6 +29,10 @@ jobs:
 
       - run: pnpm lint
 
+      # Unused exports, files and dependencies. Every needless `export` is API
+      # you have implicitly promised not to break.
+      - run: pnpm knip
+
       - run: pnpm test
 
   test-redis:

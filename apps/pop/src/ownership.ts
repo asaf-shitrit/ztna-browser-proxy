@@ -25,8 +25,8 @@ export interface OwnershipRegistry {
 }
 
 const OWNER_PREFIX = 'ztna:owner:';
-export const LEASE_TTL_SECONDS = 30;
-export const RENEW_INTERVAL_MS = 10_000;
+const LEASE_TTL_SECONDS = 30;
+const RENEW_INTERVAL_MS = 10_000;
 
 /**
  * Single-POP deployments. Every connector is local, so a lookup that gets here

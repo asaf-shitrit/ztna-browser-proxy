@@ -1,6 +1,5 @@
 import http2, { type ClientHttp2Session, type ServerHttp2Stream } from 'node:http2';
 import net from 'node:net';
-import tls from 'node:tls';
 import { timingSafeEqual } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { forwardDuplex, parseAuthority, TUNNEL_SETTINGS } from '@ztna/tunnel';
@@ -325,5 +324,3 @@ function constantTimeEquals(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-// Re-exported so tests can build a TLS peer without duplicating the options.
-export { tls as _tls };
